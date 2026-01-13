@@ -8,9 +8,11 @@ import android.os.Binder
 import android.os.IBinder
 import android.view.InputQueue
 import android.view.Surface
+import kotlin.system.exitProcess
 
 external fun nativeInputBinderReceived(binder: IBinder)
 external fun nativeOnInputQueueCreated(queue: InputQueue, nativePtr: Long): Long
+external fun nativeOnCaptionBarHeightRecieved(captionBarHeight: Int, nativePtr: Long)
 external fun nativeOnInputQueueDestroyed(nativePtr: Long)
 
 class SurfaceService : Service() {
@@ -42,41 +44,26 @@ class SurfaceService : Service() {
     private val mXdgTopLevelCallback = object : TinywlXdgTopLevelCallback.Stub() {
         var captionBarHeight: Int = 0
 
-        override fun addXdgTopLevel(
-            appId: String?,
-            title: String?,
-            nativePtr: Long,
-            geoBox: WlrBox?
-        ) {
-            val xdgToplevel = XdgTopLevel().apply {
-                this.appId = appId
-                this.title = title
-                this.nativePtr = nativePtr
-            }
+        override fun addXdgTopLevel(xdgTopLevel: XdgTopLevel, geoBox: WlrBox) {
             val bundle = SurfaceViewActivityBundle(
-                binder, xdgToplevel
+                binder, xdgTopLevel
             )
             val intent = Intent(this@SurfaceService, SurfaceViewActivity::class.java)
             bundle.putTo(intent)
-            intent
             intent.setFlags(Intent.FLAG_ACTIVITY_MULTIPLE_TASK or Intent.FLAG_ACTIVITY_NEW_TASK)
 
             startActivity(intent, ActivityOptions.makeBasic().apply {
                 setLaunchBounds(Rect().apply {
-                    left = geoBox!!.x                     // left = same as x
-                    top = geoBox.y - captionBarHeight                    // top  = same as y
+                    left = geoBox.x                     // left = same as x
+                    top = geoBox.y + captionBarHeight                    // top  = same as y
                     right = geoBox.x + geoBox.width - 1     // right: exclusive-end minus 1 -> inclusive-end
-                    bottom = geoBox.y + geoBox.height - 1     // bottom: exclusive-end minus 1 -> inclusive-end
+                    bottom = geoBox.y + geoBox.height + captionBarHeight - 1     // bottom: exclusive-end minus 1 -> inclusive-end
                 })
             }.toBundle())
         }
 
-        override fun removeXdgTopLevel(
-            appId: String?,
-            title: String?,
-            nativePtr: Long
-        ) {
-            xdgTopLevelActivityFinishCallbackMap.filterKeys { it.nativePtr == nativePtr }.forEach { (xdgTopLevel, finishCallback) ->
+        override fun removeXdgTopLevel(xdgTopLevel: XdgTopLevel) {
+            xdgTopLevelActivityFinishCallbackMap.filterKeys { it.nativePtr == xdgTopLevel.nativePtr }.forEach { (xdgTopLevel, finishCallback) ->
                 // Invoke the callback to finish the activity and remove from the map
                 finishCallback.invoke()
                 xdgTopLevelActivityFinishCallbackMap.remove(xdgTopLevel)
@@ -91,8 +78,6 @@ class SurfaceService : Service() {
         flags: Int,
         startId: Int
     ): Int {
-
-
         intent?.getBundleExtra(Tinywl.EXTRA_KEY)
             ?.apply {
                 nativeInputBinderReceived(getBinder(Tinywl.BINDER_KEY_TINYWL_INPUT)!!)
@@ -101,9 +86,10 @@ class SurfaceService : Service() {
                 if (mXdgTopLevelCallback.captionBarHeight == 0)
                     mXdgTopLevelCallback.captionBarHeight = intent.getIntExtra("CAPTION_BAR_HEIGHT", 0)
 
-                ITinywlMain.Stub
+                val tinywlMain = ITinywlMain.Stub
                     .asInterface(getBinder(Tinywl.BINDER_KEY_TINYWL_MAIN))
-                    .registerXdgTopLevelCallback(mXdgTopLevelCallback)
+                tinywlMain.registerXdgTopLevelCallback(mXdgTopLevelCallback)
+                tinywlMain.asBinder().linkToDeath({ exitProcess(0) },0)
             }
         return super.onStartCommand(intent, flags, startId)
     }
@@ -113,27 +99,10 @@ class SurfaceService : Service() {
     /**
      * Called by activities when a surface is available
      */
-    fun onSurfaceCreated(
-        xdgTopLevel: XdgTopLevel,
-        surface: Surface,
-    ) {
-        // Now surface is available, call to wlroots and make it render to it
-        xdgTopLevel.surface = surface
-        mService.onSurfaceCreated(xdgTopLevel)
-    }
+    fun onSurfaceCreated(xdgTopLevel: XdgTopLevel, surface: Surface) = mService.onSurfaceCreated(xdgTopLevel.nativePtr, xdgTopLevel.nativePtrType, surface)
 
-    fun onSurfaceChanged(
-        xdgTopLevel: XdgTopLevel,
-        surface: Surface,
-    ) {
-        // Call to wlroots and resize xdg toplevel now
-        xdgTopLevel.surface = surface
-        mService.onSurfaceChanged(xdgTopLevel)
-    }
+    fun onSurfaceChanged(xdgTopLevel: XdgTopLevel, surface: Surface) = mService.onSurfaceChanged(xdgTopLevel.nativePtr, xdgTopLevel.nativePtrType, surface)
 
-    fun onSurfaceDestroyed(xdgTopLevel: XdgTopLevel) {
-        // Call to wlroots and unmap xdg toplevel now
-        mService.onSurfaceDestroyed(xdgTopLevel)
-    }
+    fun onSurfaceDestroyed(xdgTopLevel: XdgTopLevel) = mService.onSurfaceDestroyed(xdgTopLevel.nativePtr, xdgTopLevel.nativePtrType)
 
 }
